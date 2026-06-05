@@ -771,11 +771,7 @@ router.post(
                     .from("tasks")
                     .insert([
                         {
-                            title:
-                                String(
-                                    row[3]
-                                ).trim() ||
-                                "งาน",
+                            title: "เข้าเวร",
 
                             start_time:
                                 startDate.toISOString(),
