@@ -14,6 +14,8 @@ const taskRoutes = require("./routes/tasks");
 app.use("/tasks", taskRoutes);
 const userRoutes = require("./routes/users");
 app.use("/users", userRoutes);
+const calendarRoutes = require("./routes/calendar");
+app.use("/calendar", calendarRoutes);
 
 app.get("/", (req, res) => {
     res.send("LINE Scheduler API running");
