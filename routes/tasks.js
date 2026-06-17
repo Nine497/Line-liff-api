@@ -632,7 +632,7 @@ router.post("/import", upload.single("file"), async (req, res) => {
       // date
       // =========================
       const start = dayjs(new Date(year, month - 1, day, 8, 0, 0));
-      const end = start.add(1, "day");
+      const end = start.clone().add(8, "hour");
 
       // =========================
       // UPSERT TASK (EXCEL SOURCE)
