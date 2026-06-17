@@ -198,329 +198,275 @@ router.get("/today", async (req, res) => {
 });
 
 router.post("/", async (req, res) => {
-    try {
-        const {
+  try {
+    const {
+      title,
+      creator_id,
+      start_time,
+      end_time,
+      type_id,
+      location,
+      participant_ids = [],
+    } = req.body;
+
+    // =========================
+    // validate
+    // =========================
+
+    if (!title?.trim()) {
+      return res.status(400).json({
+        error: "กรุณาระบุชื่องาน",
+      });
+    }
+
+    if (!start_time || !end_time) {
+      return res.status(400).json({
+        error: "กรุณาระบุวันและเวลา",
+      });
+    }
+
+    const start = new Date(start_time);
+    const end = new Date(end_time);
+
+    if (end <= start) {
+      return res.status(400).json({
+        error:
+          "วันสิ้นสุดต้องมากกว่าวันเริ่มต้น",
+      });
+    }
+
+    // =========================
+    // creator
+    // =========================
+
+    let finalCreatorId = null;
+
+    if (creator_id) {
+      const { data: user } =
+        await supabase
+          .from("users")
+          .select("id")
+          .or(
+            `id.eq.${creator_id},line_id.eq.${creator_id}`
+          )
+          .limit(1)
+          .maybeSingle();
+
+      finalCreatorId = user?.id ?? null;
+    }
+
+    // =========================
+    // check overlap
+    // =========================
+
+    if (
+      Array.isArray(participant_ids) &&
+      participant_ids.length > 0
+    ) {
+      const {
+        data: existingRelations,
+        error: relationError,
+      } = await supabase
+        .from("task_participants")
+        .select(`
+          participant_id,
+          participant:participants (
+            id,
+            name
+          ),
+          task:tasks (
+            id,
             title,
-            creator_id,
+            source,
             start_time,
-            end_time,
-            type_id,
-            location,
-
-            // manual create
-            participant_ids,
-
-            // import excel
-            participants,
-        } = req.body;
-
-        console.log(
-            "Creating task with data:",
-            req.body
+            end_time
+          )
+        `)
+        .in(
+          "participant_id",
+          participant_ids
         );
 
-        function normalizeThaiName(
-            name = ""
-        ) {
-            return name
-                .trim()
-                .replace(
-                    /^(นาย|นาง|นางสาว|น\.ส\.|ดร\.)/g,
-                    ""
-                )
-                .replace(/\s+/g, " ")
-                .trim()
-                .toLowerCase();
-        }
+      if (relationError) {
+        return res.status(500).json({
+          error:
+            relationError.message,
+        });
+      }
 
-        let finalCreatorId =
-            creator_id || null;
+      const conflicts =
+        existingRelations.filter(
+          (row) => {
+            const task = row.task;
 
-        // check creator
-        if (finalCreatorId) {
-            const {
-                data: userCheck,
-            } = await supabase
-                .from("users")
-                .select("id")
-                .or(
-                    `id.eq.${finalCreatorId},line_id.eq.${finalCreatorId}`
-                )
-                .limit(1);
-
-            if (
-                Array.isArray(userCheck) &&
-                userCheck.length > 0
-            ) {
-                finalCreatorId =
-                    userCheck[0].id;
-            } else {
-                finalCreatorId = null;
+            if (!task) {
+              return false;
             }
-        }
 
-        // create task
-        const {
-            data: task,
-            error: taskError,
-        } = await supabase
-            .from("tasks")
-            .insert([
-                {
-                    title,
+            const taskStart =
+              new Date(
+                task.start_time
+              );
 
-                    creator_id:
-                        finalCreatorId,
+            const taskEnd =
+              new Date(
+                task.end_time
+              );
 
-                    start_time,
-
-                    end_time:
-                        end_time || null,
-
-                    type_id:
-                        type_id ?? null,
-
-                    location:
-                        location || null,
-
-                    created_at:
-                        new Date().toISOString(),
-
-                    updated_at:
-                        new Date().toISOString(),
-                },
-            ])
-            .select()
-            .single();
-
-        if (taskError) {
-            console.error(
-                "Task Insert Error:",
-                taskError
+            return (
+              start < taskEnd &&
+              end > taskStart
             );
+          }
+        );
 
-            return res
-                .status(500)
-                .json(taskError);
-        }
+      if (conflicts.length > 0) {
+        return res.status(409).json({
+          error:
+            "ผู้เข้าร่วมบางคนติดภารกิจอยู่แล้ว",
+          conflicts:
+            conflicts.map(
+              (item) => ({
+                participant_id:
+                  item.participant?.id,
 
-        const taskParticipantRows =
-            [];
+                participant_name:
+                  item.participant?.name,
 
-        /*
-          ===================================
-          CASE 1:
-          participant_ids
-          ===================================
-        */
+                task_id:
+                  item.task?.id,
 
-        if (
-            Array.isArray(
-                participant_ids
-            ) &&
-            participant_ids.length > 0
-        ) {
-            console.log(
-                "Using participant_ids"
-            );
+                task_title:
+                  item.task?.title,
 
-            for (const participantId of participant_ids) {
-                if (!participantId) {
-                    continue;
-                }
+                source:
+                  item.task?.source,
 
-                taskParticipantRows.push(
-                    {
-                        task_id:
-                            task.id,
+                start_time:
+                  item.task
+                    ?.start_time,
 
-                        participant_id:
-                            participantId,
+                end_time:
+                  item.task
+                    ?.end_time,
+              })
+            ),
+        });
+      }
+    }
 
-                        created_at:
-                            new Date().toISOString(),
-                    }
-                );
-            }
-        }
+    // =========================
+    // create task
+    // =========================
 
-        /*
-          ===================================
-          CASE 2:
-          participants (excel import)
-          ===================================
-        */
+    const now =
+      new Date().toISOString();
 
-        else if (
-            Array.isArray(
-                participants
-            ) &&
-            participants.length > 0
-        ) {
-            console.log(
-                "Using participant names"
-            );
+    const {
+      data: task,
+      error: taskError,
+    } = await supabase
+      .from("tasks")
+      .insert({
+        title: title.trim(),
 
-            const {
-                data: allParticipants,
-            } = await supabase
-                .from("participants")
-                .select(`
-          id,
-          name
-        `);
+        creator_id:
+          finalCreatorId,
 
-            for (const rawName of participants) {
-                const participantName =
-                    String(
-                        rawName
-                    ).trim();
+        start_time,
 
-                if (
-                    !participantName
-                ) {
-                    continue;
-                }
+        end_time,
 
-                const normalizedInput =
-                    normalizeThaiName(
-                        participantName
-                    );
+        type_id:
+          type_id ?? null,
 
-                let participantId =
-                    null;
+        location:
+          location?.trim() ||
+          null,
 
-                // find similar name
-                const matchedParticipant =
-                    (
-                        allParticipants ??
-                        []
-                    ).find(
-                        (
-                            participant
-                        ) => {
-                            const normalizedDbName =
-                                normalizeThaiName(
-                                    participant.name
-                                );
+        source: "manual",
 
-                            return (
-                                normalizedDbName.includes(
-                                    normalizedInput
-                                ) ||
-                                normalizedInput.includes(
-                                    normalizedDbName
-                                )
-                            );
-                        }
-                    );
+        created_at: now,
+        updated_at: now,
+      })
+      .select()
+      .single();
 
-                // already exists
-                if (
-                    matchedParticipant
-                ) {
-                    participantId =
-                        matchedParticipant.id;
-                } else {
-                    // create new
-                    const {
-                        data:
-                        newParticipant,
-                        error:
-                        participantInsertError,
-                    } = await supabase
-                        .from(
-                            "participants"
-                        )
-                        .insert([
-                            {
-                                name:
-                                    participantName,
+    if (taskError) {
+      return res.status(500).json({
+        error:
+          taskError.message,
+      });
+    }
 
-                                created_at:
-                                    new Date().toISOString(),
-                            },
-                        ])
-                        .select(`
-              id
-            `)
-                        .single();
+    // =========================
+    // participants
+    // =========================
 
-                    if (
-                        participantInsertError
-                    ) {
-                        console.error(
-                            participantInsertError
-                        );
+    if (
+      participant_ids.length > 0
+    ) {
+      const participantRows =
+        participant_ids
+          .filter(Boolean)
+          .map(
+            (
+              participantId
+            ) => ({
+              task_id: task.id,
 
-                        continue;
-                    }
+              participant_id:
+                participantId,
 
-                    participantId =
-                        newParticipant.id;
-                }
+              created_at: now,
+            })
+          );
 
-                if (
-                    participantId
-                ) {
-                    taskParticipantRows.push(
-                        {
-                            task_id:
-                                task.id,
+      const {
+        error: relationError,
+      } = await supabase
+        .from(
+          "task_participants"
+        )
+        .upsert(
+          participantRows,
+          {
+            onConflict:
+              "task_id,participant_id",
+          }
+        );
 
-                            participant_id:
-                                participantId,
+      if (relationError) {
+        await supabase
+          .from("tasks")
+          .delete()
+          .eq("id", task.id);
 
-                            created_at:
-                                new Date().toISOString(),
-                        }
-                    );
-                }
-            }
-        }
+        return res.status(500).json({
+          error:
+            relationError.message,
+        });
+      }
+    }
 
-        // insert task_participants
-        if (
-            taskParticipantRows.length >
-            0
-        ) {
-            const {
-                error:
-                taskParticipantsError,
-            } = await supabase
-                .from(
-                    "task_participants"
-                )
-                .insert(
-                    taskParticipantRows
-                );
+    // =========================
+    // return task
+    // =========================
 
-            if (
-                taskParticipantsError
-            ) {
-                console.error(
-                    "Task Participants Insert Error:",
-                    taskParticipantsError
-                );
-
-                return res.status(500).json({
-                    error:
-                        taskParticipantsError,
-                });
-            }
-        }
-
-        // enriched task
-        const {
-            data: enrichedTask,
-        } = await supabase
-            .from("tasks")
-            .select(`
+    const {
+      data: enrichedTask,
+    } = await supabase
+      .from("tasks")
+      .select(`
         *,
         creator:users (
           id,
           display_name,
           picture_url
+        ),
+        type:types (
+          id,
+          name
         ),
         task_participants (
           id,
@@ -530,20 +476,21 @@ router.post("/", async (req, res) => {
           )
         )
       `)
-            .eq("id", task.id)
-            .single();
+      .eq("id", task.id)
+      .single();
 
-        return res.json(
-            enrichedTask
-        );
-    } catch (err) {
-        console.error(err);
+    return res.json(
+      enrichedTask || task
+    );
+  } catch (error) {
+    console.error(error);
 
-        return res.status(500).json({
-            message: "server error",
-        });
-    }
+    return res.status(500).json({
+      error: error.message,
+    });
+  }
 });
+
 router.get("/types", async (req, res) => {
     const { data, error } = await supabase
         .from("types")
