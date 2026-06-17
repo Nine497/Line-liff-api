@@ -758,10 +758,7 @@ router.post(
 
                 // +1 วัน
                 const endDate =
-                    startDate.add(
-                        1,
-                        "day"
-                    );
+                    startDate;
 
                 // create task
                 const {
