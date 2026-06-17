@@ -560,17 +560,12 @@ router.get("/types", async (req, res) => {
 router.post("/import", upload.single("file"), async (req, res) => {
   try {
     if (!req.file) {
-      return res.status(400).json({
-        error: "No file uploaded",
-      });
+      return res.status(400).json({ error: "No file uploaded" });
     }
 
     const userId = req.body.user_id || null;
 
-    const workbook = XLSX.read(req.file.buffer, {
-      type: "buffer",
-    });
-
+    const workbook = XLSX.read(req.file.buffer, { type: "buffer" });
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
 
     const rows = XLSX.utils.sheet_to_json(sheet, {
@@ -616,25 +611,21 @@ router.post("/import", upload.single("file"), async (req, res) => {
       const participantName = String(row[2]).trim();
 
       // =========================
-      // UPSERT PARTICIPANT (แนะนำแบบใหม่)
+      // UPSERT participant
       // =========================
       let participantId = null;
 
       if (participantName) {
-        const { data: participant, error } = await supabase
+        const { data } = await supabase
           .from("participants")
           .upsert(
             { name: participantName },
-            {
-              onConflict: "name", // 🔥 ต้องมี UNIQUE(name)
-            }
+            { onConflict: "name" }
           )
           .select("id")
           .single();
 
-        if (!error) {
-          participantId = participant?.id;
-        }
+        participantId = data?.id;
       }
 
       // =========================
@@ -644,7 +635,7 @@ router.post("/import", upload.single("file"), async (req, res) => {
       const end = start.add(1, "day");
 
       // =========================
-      // UPSERT TASK
+      // UPSERT TASK (EXCEL SOURCE)
       // =========================
       const { data: task, error: taskError } = await supabase
         .from("tasks")
@@ -656,10 +647,11 @@ router.post("/import", upload.single("file"), async (req, res) => {
             location: null,
             type_id: 3,
             creator_id: userId,
+            source: "excel", // ⭐ สำคัญมาก
             updated_at: new Date().toISOString(),
           },
           {
-            onConflict: "title,start_time",
+            onConflict: "title,start_time,end_time,source",
           }
         )
         .select()
@@ -671,7 +663,7 @@ router.post("/import", upload.single("file"), async (req, res) => {
       }
 
       // =========================
-      // UPSERT TASK PARTICIPANT (ของคุณถูกแล้ว)
+      // UPSERT RELATION
       // =========================
       if (participantId) {
         const { error: relError } = await supabase
@@ -682,22 +674,16 @@ router.post("/import", upload.single("file"), async (req, res) => {
               participant_id: participantId,
             },
             {
-              onConflict: "task_id,participant_id", // ✔ ใช้ได้แล้ว
+              onConflict: "task_id,participant_id",
             }
           );
 
         if (relError) {
-          console.error("Relation Upsert Error:", relError);
+          console.error("Relation Error:", relError);
         }
       }
 
       insertedTasks.push(task);
-    }
-
-    if (!insertedTasks.length) {
-      return res.status(400).json({
-        error: "No valid rows found",
-      });
     }
 
     return res.json({
@@ -705,12 +691,10 @@ router.post("/import", upload.single("file"), async (req, res) => {
       count: insertedTasks.length,
       data: insertedTasks,
     });
+
   } catch (err) {
     console.error(err);
-
-    return res.status(500).json({
-      error: err.message,
-    });
+    return res.status(500).json({ error: err.message });
   }
 });
 
