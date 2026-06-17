@@ -25,26 +25,26 @@ function normalizeThaiName(name) {
 
 router.get("/sync", async (req, res) => {
   try {
-     const token = req.query.token;
+    const token = req.query.token;
 
-  if (token !== process.env.CRON_SECRET) {
-    return res.status(401).json({
-      error: "Unauthorized",
-    });
-  }
-  
-    const webEvents = await ical.async.fromURL(ICAL_URL);
+    if (token !== process.env.CRON_SECRET) {
+      return res.status(401).json({
+        error: "Unauthorized",
+      });
+    }
+
+    const webEvents = await ical.async.fromURL(
+      ICAL_URL
+    );
 
     const now = new Date();
 
-    // เดือนนี้
     const startDate = new Date(
       now.getFullYear(),
       now.getMonth(),
       1
     );
 
-    // สิ้นเดือนหน้า
     const endDate = new Date(
       now.getFullYear(),
       now.getMonth() + 2,
@@ -55,20 +55,56 @@ router.get("/sync", async (req, res) => {
       999
     );
 
+    // =========================
+    // preload types
+    // =========================
+
+    const {
+      data: types,
+      error: typesError,
+    } = await supabase
+      .from("types")
+      .select("*");
+
+    if (typesError) {
+      throw typesError;
+    }
+
+    // =========================
+    // preload participants
+    // =========================
+
+    const {
+      data: participantCache,
+      error: participantError,
+    } = await supabase
+      .from("participants")
+      .select("*");
+
+    if (participantError) {
+      throw participantError;
+    }
+
+    const participants =
+      participantCache ?? [];
+
     const results = [];
 
     for (const key in webEvents) {
       const ev = webEvents[key];
 
-      // เอาเฉพาะ event
       if (ev.type !== "VEVENT") continue;
 
       if (!ev.start || !ev.end) continue;
 
-      const eventStart = new Date(ev.start);
+      const eventStart = new Date(
+        ev.start
+      );
 
-      // filter date range
-      if (eventStart < startDate || eventStart > endDate) {
+      if (
+        eventStart < startDate ||
+        eventStart > endDate
+      ) {
         continue;
       }
 
@@ -79,20 +115,48 @@ router.get("/sync", async (req, res) => {
       let endTime = new Date(ev.end);
 
       if (ev.datetype === "date") {
-        endTime.setDate(endTime.getDate() - 1);
+        endTime.setDate(
+          endTime.getDate() - 1
+        );
       }
 
       // =========================
-      // insert/update task
+      // title
+      // =========================
+
+      const title =
+        ev.summary ||
+        "ไม่มีชื่อกิจกรรม";
+
+      const normalizedTitle =
+        title
+          .replace(/\s+/g, "")
+          .toLowerCase();
+
+      // =========================
+      // detect type
+      // =========================
+
+      const matchedType =
+        types.find((type) =>
+          normalizedTitle.includes(
+            type.name
+              .replace(/\s+/g, "")
+              .toLowerCase()
+          )
+        );
+
+      // =========================
+      // task payload
       // =========================
 
       const taskPayload = {
         google_event_uid: ev.uid,
-
-        title: ev.summary || "ไม่มีชื่อกิจกรรม",
-
+        title,
         start_time: ev.start,
         end_time: endTime,
+        type_id:
+          matchedType?.id ?? 6,
       };
 
       const {
@@ -101,13 +165,17 @@ router.get("/sync", async (req, res) => {
       } = await supabase
         .from("tasks")
         .upsert(taskPayload, {
-          onConflict: "google_event_uid",
+          onConflict:
+            "google_event_uid",
         })
         .select()
         .single();
 
       if (taskError) {
-        console.error(taskError);
+        console.error(
+          "Task Upsert Error:",
+          taskError
+        );
         continue;
       }
 
@@ -117,108 +185,106 @@ router.get("/sync", async (req, res) => {
       // extract participants
       // =========================
 
-const matches =
-  (ev.summary || "").match(/#([^#]+)/g) || [];
+      const matches =
+        title.match(/#([^#]+)/g) || [];
 
-const participantNames = matches.map((tag) =>
-  tag.replace("#", "").trim()
-);
+      const participantNames =
+        matches.map((tag) =>
+          tag.replace("#", "").trim()
+        );
 
-      const participantResults = [];
+      const participantResults =
+        [];
 
       // =========================
       // loop participants
       // =========================
 
       for (const name of participantNames) {
-
         const normalizedName =
           normalizeThaiName(name);
 
-        // =========================
-        // get all participants
-        // =========================
+        let matchedParticipant =
+          null;
 
-        const {
-          data: existingParticipants,
-          error: searchError,
-        } = await supabase
-          .from("participants")
-          .select("*");
-
-        if (searchError) {
-          console.error(searchError);
-          continue;
-        }
-
-        let matchedParticipant = null;
-
-        // =========================
-        // find similar participant
-        // =========================
-
-        for (const participant of existingParticipants) {
-
+        for (const participant of participants) {
           const existingNormalized =
-            normalizeThaiName(participant.name);
-
-          // เช่น:
-          // นพดล
-          // match
-          // นพดล พาลิตา
+            normalizeThaiName(
+              participant.name
+            );
 
           if (
-            existingNormalized.includes(normalizedName) ||
-            normalizedName.includes(existingNormalized)
+            existingNormalized.includes(
+              normalizedName
+            ) ||
+            normalizedName.includes(
+              existingNormalized
+            )
           ) {
-            matchedParticipant = participant;
+            matchedParticipant =
+              participant;
             break;
           }
         }
 
-        let participantData = null;
+        let participantData =
+          null;
 
         // =========================
         // existing participant
         // =========================
 
         if (matchedParticipant) {
-
-          participantData = matchedParticipant;
-
-          // ถ้าชื่อใหม่ยาวกว่า
-          // update เป็นชื่อเต็ม
+          participantData =
+            matchedParticipant;
 
           if (
             name.length >
-            matchedParticipant.name.length
+            matchedParticipant.name
+              .length
           ) {
             const {
-              data: updatedParticipant,
+              data:
+                updatedParticipant,
               error: updateError,
             } = await supabase
               .from("participants")
               .update({
                 name,
               })
-              .eq("id", matchedParticipant.id)
+              .eq(
+                "id",
+                matchedParticipant.id
+              )
               .select()
               .single();
 
             if (!updateError) {
-              participantData = updatedParticipant;
+              participantData =
+                updatedParticipant;
+
+              const index =
+                participants.findIndex(
+                  (p) =>
+                    p.id ===
+                    updatedParticipant.id
+                );
+
+              if (index !== -1) {
+                participants[index] =
+                  updatedParticipant;
+              }
             }
           }
-
         } else {
-
           // =========================
-          // insert new participant
+          // insert participant
           // =========================
 
           const {
             data: newParticipant,
-            error: participantError,
+            error:
+              insertParticipantError,
           } = await supabase
             .from("participants")
             .insert({
@@ -227,42 +293,63 @@ const participantNames = matches.map((tag) =>
             .select()
             .single();
 
-          if (participantError) {
-            console.error(participantError);
+          if (
+            insertParticipantError
+          ) {
+            console.error(
+              "Participant Insert Error:",
+              insertParticipantError
+            );
             continue;
           }
 
-          participantData = newParticipant;
+          participantData =
+            newParticipant;
+
+          participants.push(
+            newParticipant
+          );
         }
 
         // =========================
-        // create relation
+        // relation
         // =========================
 
-        const { error: relationError } =
-          await supabase
-            .from("task_participants")
-            .upsert(
-              {
-                task_id: taskId,
-                participant_id: participantData.id,
-              },
-              {
-                onConflict:
-                  "task_id,participant_id",
-              }
-            );
+        const {
+          error: relationError,
+        } = await supabase
+          .from("task_participants")
+          .upsert(
+            {
+              task_id: taskId,
+              participant_id:
+                participantData.id,
+            },
+            {
+              onConflict:
+                "task_id,participant_id",
+            }
+          );
 
         if (relationError) {
-          console.error(relationError);
+          console.error(
+            "Relation Error:",
+            relationError
+          );
         }
 
-        participantResults.push(participantData);
+        participantResults.push(
+          participantData
+        );
       }
 
       results.push({
         task: taskData,
-        participants: participantResults,
+        participants:
+          participantResults,
+        type:
+          matchedType?.name ??
+          null,
       });
     }
 
@@ -271,9 +358,11 @@ const participantNames = matches.map((tag) =>
       total: results.length,
       data: results,
     });
-
   } catch (error) {
-    console.error(error);
+    console.error(
+      "SYNC ERROR:",
+      error
+    );
 
     res.status(500).json({
       success: false,
