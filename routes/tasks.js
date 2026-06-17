@@ -557,316 +557,162 @@ router.get("/types", async (req, res) => {
     res.json(data || []);
 });
 
-router.post(
-    "/import",
-    upload.single("file"),
-    async (req, res) => {
-        try {
-            if (!req.file) {
-                return res.status(400).json({
-                    error: "No file uploaded",
-                });
-            }
-
-            const userId =
-                req.body.user_id || null;
-
-            // อ่าน excel
-            const workbook = XLSX.read(
-                req.file.buffer,
-                {
-                    type: "buffer",
-                }
-            );
-
-            const sheetName =
-                workbook.SheetNames[0];
-
-            const sheet =
-                workbook.Sheets[sheetName];
-
-            // array
-            const rows =
-                XLSX.utils.sheet_to_json(
-                    sheet,
-                    {
-                        header: 1,
-                        defval: "",
-                    }
-                );
-
-            console.log(
-                "Excel Rows",
-                rows
-            );
-
-            // ข้าม header
-            const dataRows =
-                rows.slice(1);
-
-            const thaiMonths = {
-                มกราคม: 1,
-                กุมภาพันธ์: 2,
-                มีนาคม: 3,
-                เมษายน: 4,
-                พฤษภาคม: 5,
-                มิถุนายน: 6,
-                กรกฎาคม: 7,
-                สิงหาคม: 8,
-                กันยายน: 9,
-                ตุลาคม: 10,
-                พฤศจิกายน: 11,
-                ธันวาคม: 12,
-            };
-
-            const insertedTasks =
-                [];
-
-            for (const row of dataRows) {
-                // กันแถวว่าง
-                const isEmpty =
-                    !row ||
-                    row.every(
-                        (cell) =>
-                            String(cell).trim() ===
-                            ""
-                    );
-
-                if (isEmpty) {
-                    continue;
-                }
-
-                const rawDate = String(
-                    row[0]
-                ).trim();
-
-                // ข้าม row สำรอง
-                if (
-                    !rawDate ||
-                    rawDate === "สำรอง"
-                ) {
-                    continue;
-                }
-
-                /*
-                  1 มิถุนายน 2569
-                */
-
-                const parts =
-                    rawDate.split(" ");
-
-                if (parts.length < 3) {
-                    continue;
-                }
-
-                const day = Number(
-                    parts[0]
-                );
-
-                const month =
-                    thaiMonths[
-                    parts[1]
-                    ];
-
-                const year =
-                    Number(parts[2]) - 543;
-
-                if (
-                    !day ||
-                    !month ||
-                    !year
-                ) {
-                    continue;
-                }
-
-                // participant name
-                const participantName =
-                    String(row[2]).trim();
-
-                let participantId =
-                    null;
-
-                // ถ้ามีชื่อ
-                if (participantName) {
-                    // หา participant ก่อน
-                    const {
-                        data:
-                        existingParticipant,
-                    } = await supabase
-                        .from(
-                            "participants"
-                        )
-                        .select("id")
-                        .eq(
-                            "name",
-                            participantName
-                        )
-                        .single();
-
-                    // ถ้ามีอยู่แล้ว
-                    if (
-                        existingParticipant
-                    ) {
-                        participantId =
-                            existingParticipant.id;
-                    } else {
-                        // สร้างใหม่
-                        const {
-                            data:
-                            newParticipant,
-                            error:
-                            participantError,
-                        } = await supabase
-                            .from(
-                                "participants"
-                            )
-                            .insert({
-                                name:
-                                    participantName,
-                            })
-                            .select("id")
-                            .single();
-
-                        if (
-                            participantError
-                        ) {
-                            console.error(
-                                "Participant Insert Error:",
-                                participantError
-                            );
-
-                            continue;
-                        }
-
-                        participantId =
-                            newParticipant.id;
-                    }
-                }
-
-                // เวลาเริ่ม 08:00
-                const startDate =
-                    dayjs(
-                        new Date(
-                            year,
-                            month - 1,
-                            day,
-                            8,
-                            0,
-                            0
-                        )
-                    );
-
-                // +1 วัน
-                const endDate =
-                    startDate;
-
-                // create task
-                const {
-                    data: task,
-                    error: taskError,
-                } = await supabase
-                    .from("tasks")
-                    .insert([
-                        {
-                            title: "เข้าเวร",
-
-                            start_time:
-                                startDate.toISOString(),
-
-                            end_time:
-                                endDate.toISOString(),
-
-                            location: null,
-
-                            type_id: 3,
-
-                            creator_id:
-                                userId,
-
-                            created_at:
-                                new Date().toISOString(),
-
-                            updated_at:
-                                new Date().toISOString(),
-                        },
-                    ])
-                    .select()
-                    .single();
-
-                if (taskError) {
-                    console.error(
-                        "Task Insert Error:",
-                        taskError
-                    );
-
-                    continue;
-                }
-
-                // create task participant
-                if (participantId) {
-                    const {
-                        error:
-                        taskParticipantError,
-                    } = await supabase
-                        .from(
-                            "task_participants"
-                        )
-                        .insert({
-                            task_id: task.id,
-
-                            participant_id:
-                                participantId,
-
-                            created_at:
-                                new Date().toISOString(),
-                        });
-
-                    if (
-                        taskParticipantError
-                    ) {
-                        console.error(
-                            "Task Participant Insert Error:",
-                            taskParticipantError
-                        );
-                    }
-                }
-
-                insertedTasks.push(
-                    task
-                );
-            }
-
-            console.log(
-                "Inserted Tasks:",
-                insertedTasks
-            );
-
-            if (
-                !insertedTasks.length
-            ) {
-                return res.status(400).json({
-                    error:
-                        "No valid rows found",
-                });
-            }
-
-            return res.json({
-                success: true,
-
-                count:
-                    insertedTasks.length,
-
-                data: insertedTasks,
-            });
-        } catch (err) {
-            console.error(err);
-
-            return res.status(500).json({
-                error: err.message,
-            });
-        }
+router.post("/import", upload.single("file"), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        error: "No file uploaded",
+      });
     }
-);
+
+    const userId = req.body.user_id || null;
+
+    const workbook = XLSX.read(req.file.buffer, {
+      type: "buffer",
+    });
+
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+
+    const rows = XLSX.utils.sheet_to_json(sheet, {
+      header: 1,
+      defval: "",
+    });
+
+    const dataRows = rows.slice(1);
+
+    const thaiMonths = {
+      มกราคม: 1,
+      กุมภาพันธ์: 2,
+      มีนาคม: 3,
+      เมษายน: 4,
+      พฤษภาคม: 5,
+      มิถุนายน: 6,
+      กรกฎาคม: 7,
+      สิงหาคม: 8,
+      กันยายน: 9,
+      ตุลาคม: 10,
+      พฤศจิกายน: 11,
+      ธันวาคม: 12,
+    };
+
+    const insertedTasks = [];
+
+    for (const row of dataRows) {
+      const isEmpty = !row || row.every((c) => String(c).trim() === "");
+      if (isEmpty) continue;
+
+      const rawDate = String(row[0]).trim();
+      if (!rawDate || rawDate === "สำรอง") continue;
+
+      const parts = rawDate.split(" ");
+      if (parts.length < 3) continue;
+
+      const day = Number(parts[0]);
+      const month = thaiMonths[parts[1]];
+      const year = Number(parts[2]) - 543;
+
+      if (!day || !month || !year) continue;
+
+      const participantName = String(row[2]).trim();
+
+      // =========================
+      // UPSERT PARTICIPANT (แนะนำแบบใหม่)
+      // =========================
+      let participantId = null;
+
+      if (participantName) {
+        const { data: participant, error } = await supabase
+          .from("participants")
+          .upsert(
+            { name: participantName },
+            {
+              onConflict: "name", // 🔥 ต้องมี UNIQUE(name)
+            }
+          )
+          .select("id")
+          .single();
+
+        if (!error) {
+          participantId = participant?.id;
+        }
+      }
+
+      // =========================
+      // date
+      // =========================
+      const start = dayjs(new Date(year, month - 1, day, 8, 0, 0));
+      const end = start.add(1, "day");
+
+      // =========================
+      // UPSERT TASK
+      // =========================
+      const { data: task, error: taskError } = await supabase
+        .from("tasks")
+        .upsert(
+          {
+            title: "เข้าเวร",
+            start_time: start.toISOString(),
+            end_time: end.toISOString(),
+            location: null,
+            type_id: 3,
+            creator_id: userId,
+            updated_at: new Date().toISOString(),
+          },
+          {
+            onConflict: "title,start_time",
+          }
+        )
+        .select()
+        .single();
+
+      if (taskError) {
+        console.error("Task Upsert Error:", taskError);
+        continue;
+      }
+
+      // =========================
+      // UPSERT TASK PARTICIPANT (ของคุณถูกแล้ว)
+      // =========================
+      if (participantId) {
+        const { error: relError } = await supabase
+          .from("task_participants")
+          .upsert(
+            {
+              task_id: task.id,
+              participant_id: participantId,
+            },
+            {
+              onConflict: "task_id,participant_id", // ✔ ใช้ได้แล้ว
+            }
+          );
+
+        if (relError) {
+          console.error("Relation Upsert Error:", relError);
+        }
+      }
+
+      insertedTasks.push(task);
+    }
+
+    if (!insertedTasks.length) {
+      return res.status(400).json({
+        error: "No valid rows found",
+      });
+    }
+
+    return res.json({
+      success: true,
+      count: insertedTasks.length,
+      data: insertedTasks,
+    });
+  } catch (err) {
+    console.error(err);
+
+    return res.status(500).json({
+      error: err.message,
+    });
+  }
+});
 
 router.get(
     "/participants",
