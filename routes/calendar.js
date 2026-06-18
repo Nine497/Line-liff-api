@@ -24,6 +24,12 @@ function normalizeThaiName(name) {
 }
 
 router.get("/sync", async (req, res) => {
+    console.log(
+    "SYNC CALLED",
+    new Date().toISOString(),
+    req.headers["user-agent"],
+    req.ip
+  );
   try {
     const token = req.query.token;
 
