@@ -18,7 +18,12 @@ const calendarRoutes = require("./routes/calendar");
 app.use("/calendar", calendarRoutes);
 
 app.get("/", (req, res) => {
-    res.send("LINE Scheduler API running");
+  console.log(
+    "WAKE UP",
+    new Date().toISOString()
+  );
+
+  res.send("LINE Scheduler API running");
 });
 
 app.get("/test-db", async (req, res) => {
@@ -29,6 +34,7 @@ app.get("/test-db", async (req, res) => {
 
     res.json({ data, error });
 });
+
 
 app.listen(process.env.PORT, () => {
     console.log("Server running on port " + process.env.PORT);
