@@ -17,6 +17,14 @@ app.use("/users", userRoutes);
 const calendarRoutes = require("./routes/calendar");
 app.use("/calendar", calendarRoutes);
 
+app.post("/webhook", line.middleware(config), async (req, res) => {
+  await Promise.all(
+    req.body.events.map(handleEvent)
+  );
+
+  res.sendStatus(200);
+});
+
 app.get("/", (req, res) => {
   console.log(
     "WAKE UP",
