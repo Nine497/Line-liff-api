@@ -3,7 +3,6 @@ const { verifyLineToken } = require("./lineAuth");
 
 async function upsertUserFromLine(id_token) {
   const decoded = await verifyLineToken(id_token);
-
   const payload = {
     line_id: decoded.sub,
     display_name: decoded.name ?? null,

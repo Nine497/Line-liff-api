@@ -1,13 +1,19 @@
 const router = require("express").Router();
 const authService = require("../services/authService");
+const { success, error } = require("../utils/httpResponse");
 
 // login / upsert
 router.post("/", async (req, res) => {
   try {
     const user = await authService.upsertUserFromLine(req.body.id_token);
-    return res.json({ user });
+
+    return success(res, user, "Login success");
   } catch (err) {
-    return res.status(401).json({ error: "Invalid LINE token" });
+    err.status = 401;
+    err.message = "Invalid LINE token";
+    err.code = "UNAUTHORIZED";
+
+    return error(res, err);
   }
 });
 
@@ -15,9 +21,9 @@ router.post("/", async (req, res) => {
 router.get("/", async (req, res) => {
   try {
     const data = await authService.getUsers();
-    return res.json(data);
+    return success(res, data); // ✔️ ใช้ helper
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    return error(res, err);
   }
 });
 
@@ -25,9 +31,9 @@ router.get("/", async (req, res) => {
 router.get("/:id", async (req, res) => {
   try {
     const data = await authService.getUserByLineId(req.params.id);
-    return res.json(data);
+    return success(res, data);
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    return error(res, err);
   }
 });
 
