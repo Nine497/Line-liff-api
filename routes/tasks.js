@@ -5,85 +5,71 @@ const multer = require("multer");
 const upload = multer({ storage: multer.memoryStorage() });
 
 const taskService = require("../services/taskService");
+const { success, error } = require("../utils/httpResponse");
 
-/**
- * =========================
- * GET ALL TASKS
- * =========================
- */
+// =========================
+// GET ALL TASKS
+// =========================
 router.get("/", async (req, res) => {
   try {
     const data = await taskService.getTasks();
-    return res.json(data);
+    return success(res, data);
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    return error(res, err);
   }
 });
 
-/**
- * =========================
- * TODAY TASKS
- * =========================
- */
+// =========================
+// TODAY TASKS
+// =========================
 router.get("/today", async (req, res) => {
   try {
     const data = await taskService.getTodayTasks();
-    return res.json(data);
+    return success(res, data);
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    return error(res, err);
   }
 });
 
-/**
- * =========================
- * CREATE TASK
- * =========================
- */
+// =========================
+// CREATE TASK
+// =========================
 router.post("/", async (req, res) => {
   try {
     const task = await taskService.createTask(req.body);
-    return res.json(task);
+    return success(res, task);
   } catch (err) {
-    if (err.code === "CONFLICT") return res.status(409).json(err);
-    if (err.code === "VALIDATION") return res.status(400).json(err);
-
-    return res.status(500).json({ error: err.message });
+    return error(res, err);
   }
 });
 
-/**
- * =========================
- * TASK TYPES
- * =========================
- */
+// =========================
+// TASK TYPES
+// =========================
 router.get("/types", async (req, res) => {
   try {
     const data = await taskService.getTaskTypes();
-    return res.json(data);
+    return success(res, data);
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    return error(res, err);
   }
 });
 
-/**
- * =========================
- * PARTICIPANTS
- * =========================
- */
+// =========================
+// PARTICIPANTS
+// =========================
 router.get("/participants", async (req, res) => {
   try {
     const data = await taskService.getParticipants();
-    return res.json(data);
+    return success(res, data);
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    return error(res, err);
   }
 });
 
-/**
- * =========================
- * AVAILABLE PARTICIPANTS (SMART)
- * =========================
- */
+// =========================
+// AVAILABLE PARTICIPANTS (SMART)
+// =========================
 router.post("/participants/available", async (req, res) => {
   try {
     const data = await taskService.getAvailableParticipants(
@@ -91,17 +77,15 @@ router.post("/participants/available", async (req, res) => {
       req.body.end_time
     );
 
-    return res.json(data);
+    return success(res, data);
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    return error(res, err);
   }
 });
 
-/**
- * =========================
- * IMPORT EXCEL
- * =========================
- */
+// =========================
+// IMPORT EXCEL
+// =========================
 router.post("/import", upload.single("file"), async (req, res) => {
   try {
     const result = await taskService.importTasksFromExcel(
@@ -109,9 +93,9 @@ router.post("/import", upload.single("file"), async (req, res) => {
       req.body.user_id
     );
 
-    return res.json(result);
+    return success(res, result);
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    return error(res, err);
   }
 });
 

@@ -25,16 +25,6 @@ app.use("/calendar", calendarRoutes);
 //   res.sendStatus(200);
 // });
 
-app.get("/", (req, res) => {
-  console.log(
-    "WAKE UP",
-    
-    new Date().toISOString()
-  );
-
-  res.send("LINE Scheduler API running");
-});
-
 app.get("/test-db", async (req, res) => {
 
     const { data, error } = await supabase
