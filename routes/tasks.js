@@ -72,9 +72,11 @@ router.get("/participants", async (req, res) => {
 // =========================
 router.post("/participants/available", async (req, res) => {
   try {
+    const { start, end } = req.query;
+
     const data = await taskService.getAvailableParticipants(
-      req.body.start_time,
-      req.body.end_time
+      start,
+      end
     );
 
     return success(res, data);
