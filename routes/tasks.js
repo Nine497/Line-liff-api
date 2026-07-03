@@ -32,6 +32,19 @@ router.get("/today", async (req, res) => {
 });
 
 // =========================
+// MY TASKS (filtered by LIFF line_id)
+// =========================
+router.get("/mine", async (req, res) => {
+  try {
+    const { line_id } = req.query;
+    const data = await taskService.getMyTasks(line_id);
+    return success(res, data);
+  } catch (err) {
+    return error(res, err);
+  }
+});
+
+// =========================
 // CREATE TASK
 // =========================
 router.post("/", async (req, res) => {
@@ -72,7 +85,7 @@ router.get("/participants", async (req, res) => {
 // =========================
 router.post("/participants/available", async (req, res) => {
   try {
-    const { start, end } = req.query;
+    const { start, end } = req.body;
 
     const data = await taskService.getAvailableParticipants(
       start,

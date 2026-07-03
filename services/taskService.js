@@ -54,6 +54,7 @@ async function checkConflict(participant_ids, start, end) {
  */
 async function insertTask({
   title,
+  description,
   creator_id,
   start_time,
   end_time,
@@ -66,6 +67,7 @@ async function insertTask({
   try {
     const payload = {
       title: title.trim(),
+      description: description?.trim() || null,
       creator_id,
       start_time,
       end_time,
@@ -138,6 +140,7 @@ async function createTask(payload) {
 
     const {
       title,
+      description,
       creator_id,
       start_time,
       end_time,
@@ -204,6 +207,7 @@ async function createTask(payload) {
     // 4. insert
     const task = await insertTask({
       title,
+      description,
       creator_id: finalCreatorId,
       start_time,
       end_time,
@@ -370,6 +374,44 @@ async function getTodayTasks() {
   }
 }
 
+/**
+ * =========================
+ * ENRICH TASKS (creator + type)
+ * shared by getTasks / getMyTasks so both return the same shape
+ * =========================
+ */
+async function enrichTasks(tasks) {
+  const creatorIds = [...new Set((tasks || []).map(t => t.creator_id).filter(Boolean))];
+  const typeIds = [...new Set((tasks || []).map(t => t.type_id).filter(Boolean))];
+
+  let creatorMap = new Map();
+  let typeMap = new Map();
+
+  if (creatorIds.length) {
+    const { data } = await supabase
+      .from("users")
+      .select("id,display_name,picture_url,line_id")
+      .in("id", creatorIds);
+
+    creatorMap = new Map((data || []).map(u => [u.id, u]));
+  }
+
+  if (typeIds.length) {
+    const { data } = await supabase
+      .from("types")
+      .select("id,name,color")
+      .in("id", typeIds);
+
+    typeMap = new Map((data || []).map(t => [t.id, t]));
+  }
+
+  return (tasks || []).map(task => ({
+    ...task,
+    creator: creatorMap.get(task.creator_id) || null,
+    type: typeMap.get(task.type_id) || null,
+  }));
+}
+
 async function getTasks() {
   try {
     const { data: tasks, error } = await supabase
@@ -387,38 +429,84 @@ async function getTasks() {
       throw error;
     }
 
-    const creatorIds = [...new Set((tasks || []).map(t => t.creator_id).filter(Boolean))];
-    const typeIds = [...new Set((tasks || []).map(t => t.type_id).filter(Boolean))];
-
-    let creatorMap = new Map();
-    let typeMap = new Map();
-
-    if (creatorIds.length) {
-      const { data } = await supabase
-        .from("users")
-        .select("id,display_name,picture_url,line_id")
-        .in("id", creatorIds);
-
-      creatorMap = new Map((data || []).map(u => [u.id, u]));
-    }
-
-    if (typeIds.length) {
-      const { data } = await supabase
-        .from("types")
-        .select("id,name,color")
-        .in("id", typeIds);
-
-      typeMap = new Map((data || []).map(t => [t.id, t]));
-    }
-
-    return (tasks || []).map(task => ({
-      ...task,
-      creator: creatorMap.get(task.creator_id) || null,
-      type: typeMap.get(task.type_id) || null,
-    }));
+    return await enrichTasks(tasks);
 
   } catch (err) {
     console.error("[getTasks] FAILED:", err);
+    throw err;
+  }
+}
+
+/**
+ * =========================
+ * MY TASKS (by LIFF line_id)
+ * Resolves the participant linked to this LINE account, then returns
+ * only the tasks that participant is assigned to.
+ * =========================
+ */
+async function getParticipantByLineId(lineId) {
+  const { data, error } = await supabase
+    .from("participants")
+    .select("id,name,line_id")
+    .eq("line_id", lineId)
+    .maybeSingle();
+
+  if (error) {
+    console.error("[getParticipantByLineId] error:", error);
+    throw error;
+  }
+
+  return data || null;
+}
+
+async function getMyTasks(lineId) {
+  try {
+    if (!lineId) {
+      throw { code: "VALIDATION", message: "Missing line_id" };
+    }
+
+    const participant = await getParticipantByLineId(lineId);
+
+    if (!participant) {
+      return { participant: null, tasks: [] };
+    }
+
+    const { data: links, error: linkError } = await supabase
+      .from("task_participants")
+      .select("task_id")
+      .eq("participant_id", participant.id);
+
+    if (linkError) {
+      console.error("[getMyTasks] task_participants error:", linkError);
+      throw linkError;
+    }
+
+    const taskIds = [...new Set((links || []).map(l => l.task_id))];
+
+    if (!taskIds.length) {
+      return { participant, tasks: [] };
+    }
+
+    const { data: tasks, error: tasksError } = await supabase
+      .from("tasks")
+      .select(`
+        *,
+        task_participants(
+          id,
+          participant:participants(id,name)
+        )
+      `)
+      .in("id", taskIds);
+
+    if (tasksError) {
+      console.error("[getMyTasks] tasks error:", tasksError);
+      throw tasksError;
+    }
+
+    return { participant, tasks: await enrichTasks(tasks) };
+
+  } catch (err) {
+    console.error("[getMyTasks] FAILED:", err);
     throw err;
   }
 }
@@ -433,4 +521,6 @@ module.exports = {
   getTaskTypes,
   getTodayTasks,
   getTasks,
+  getParticipantByLineId,
+  getMyTasks,
 };
