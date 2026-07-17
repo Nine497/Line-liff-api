@@ -16,6 +16,37 @@ dayjs.extend(customParseFormat);
 // interpretation to Thai local time regardless of the host's own TZ.
 const APP_TIMEZONE = "Asia/Bangkok";
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// creator_id can be either our own users.id (a UUID) or a LINE line_id
+// (an arbitrary LINE-issued string) — resolve whichever it is without ever
+// string-interpolating unvalidated input into a Supabase filter. The old
+// code did `.or(\`id.eq.${creator_id},line_id.eq.${creator_id}\`)` with a
+// raw client-supplied value, so a value containing "," or ")" could inject
+// extra filter clauses into the PostgREST query.
+async function resolveUserId(creatorId) {
+  if (!creatorId) return null;
+
+  try {
+    const query = supabase.from("users").select("id");
+
+    const { data, error } = await (UUID_RE.test(creatorId)
+      ? query.or(`id.eq.${creatorId},line_id.eq.${creatorId}`)
+      : query.eq("line_id", creatorId)
+    ).maybeSingle();
+
+    if (error) {
+      console.error("[resolveUserId] error:", error);
+      return null;
+    }
+
+    return data?.id || null;
+  } catch (err) {
+    console.error("[resolveUserId] Unexpected error:", err);
+    return null;
+  }
+}
+
 const THAI_MONTHS = {
   "ม.ค.": "01", "มกราคม": "01",
   "ก.พ.": "02", "กุมภาพันธ์": "02",
@@ -219,21 +250,7 @@ async function createTask(payload) {
     }
 
     // 2. resolve creator
-    let finalCreatorId = null;
-
-    if (creator_id) {
-      const { data, error } = await supabase
-        .from("users")
-        .select("id")
-        .or(`id.eq.${creator_id},line_id.eq.${creator_id}`)
-        .maybeSingle();
-
-      if (error) {
-        console.error("[createTask] creator resolve error:", error);
-      }
-
-      finalCreatorId = data?.id || null;
-    }
+    const finalCreatorId = await resolveUserId(creator_id);
 
     // 3. conflict
     const conflicts = await checkConflict(
@@ -247,8 +264,15 @@ async function createTask(payload) {
 
       throw {
         code: "CONFLICT",
+        // Without an explicit status, httpResponse.js's error() defaulted
+        // this to plain 500 — the frontend's `if (error.status === 409)`
+        // conflict-notification branch could never actually trigger.
+        status: 409,
         message: "ผู้เข้าร่วมบางคนติดภารกิจอยู่แล้ว",
-        conflicts,
+        // Named `extra` (not `conflicts`) to match utils/httpResponse.js's
+        // error() serialization, which only ever forwards `err.extra` — a
+        // top-level `conflicts` field here never reached the client before.
+        extra: conflicts,
       };
     }
 
@@ -400,17 +424,20 @@ async function getTaskTypes() {
 
 async function getTodayTasks() {
   try {
-    const start = new Date();
-    start.setHours(0, 0, 0, 0);
-
-    const end = new Date();
-    end.setHours(23, 59, 59, 999);
+    // "today" must mean the Thai calendar day, not the server process's
+    // own timezone — using new Date()/setHours() computed today's boundary
+    // against the host's local clock, which on a UTC-hosted server is 7
+    // hours off from Thailand and would show yesterday's/tomorrow's tasks
+    // as "today" for part of the day (same class of bug as the Excel
+    // import timezone fix above).
+    const start = dayjs.tz(undefined, APP_TIMEZONE).startOf("day").toISOString();
+    const end = dayjs.tz(undefined, APP_TIMEZONE).endOf("day").toISOString();
 
     const { data, error } = await supabase
       .from("tasks")
       .select("*")
-      .gte("start_time", start.toISOString())
-      .lte("start_time", end.toISOString());
+      .gte("start_time", start)
+      .lte("start_time", end);
 
     if (error) {
       console.error("[getTodayTasks] error:", error);
@@ -684,6 +711,10 @@ async function importTasksFromExcel(file, creator_id, isDuty = false) {
     // key just appends to it.
     const touchedTaskKeys = new Map();
 
+    // creator_id is constant for the whole import — resolve it once instead
+    // of re-querying the DB for every row.
+    const finalCreatorId = await resolveUserId(creator_id);
+
     for (const row of rows) {
       try {
         const title = row["ชื่องาน"];
@@ -790,17 +821,6 @@ async function importTasksFromExcel(file, creator_id, isDuty = false) {
               participant_ids.push(participantMap.get(name));
             }
           }
-        }
-
-        // Resolve creator
-        let finalCreatorId = null;
-        if (creator_id) {
-          const { data } = await supabase
-            .from("users")
-            .select("id")
-            .or(`id.eq.${creator_id},line_id.eq.${creator_id}`)
-            .maybeSingle();
-          finalCreatorId = data?.id || null;
         }
 
         const finalTitle = String(title);

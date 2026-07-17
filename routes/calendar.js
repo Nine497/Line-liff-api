@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 
 const calendarService = require("../services/calendarService");
+const { error } = require("../utils/httpResponse");
 
 router.get("/sync", async (req, res) => {
   try {
@@ -9,18 +10,14 @@ router.get("/sync", async (req, res) => {
 
     const result = await calendarService.syncGoogleCalendar(token);
 
-    res.json(result);
-  } catch (error) {
-    console.error("SYNC ERROR:", error);
-
-    if (error.code === "UNAUTHORIZED") {
-      return res.status(401).json({ error: error.message });
-    }
-
-    return res.status(500).json({
-      success: false,
-      error: error.message,
-    });
+    // Preserve this route's existing response shape ({ success, total,
+    // data } from the service itself) for whatever cron job hits it.
+    return res.json(result);
+  } catch (err) {
+    // Route through the shared helper so an unexpected failure (ICS parse
+    // error, Supabase error, etc.) doesn't leak its raw message to the
+    // client the way this route's own ad-hoc response used to.
+    return error(res, err);
   }
 });
 
