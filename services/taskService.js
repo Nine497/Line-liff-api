@@ -1,8 +1,20 @@
 const supabase = require("../supabase");
 const xlsx = require("xlsx");
 const dayjs = require("dayjs");
+const utc = require("dayjs/plugin/utc");
+const timezone = require("dayjs/plugin/timezone");
 const customParseFormat = require("dayjs/plugin/customParseFormat");
+dayjs.extend(utc);
+dayjs.extend(timezone);
 dayjs.extend(customParseFormat);
+
+// Excel imports carry naive "YYYY-MM-DD"/"HH:mm" wall-clock values with no
+// timezone info. Parsing them with a bare dayjs(...) silently uses whatever
+// timezone the *server process* happens to be running in — on most Node
+// hosts that's UTC, which would store every imported task 7 hours off from
+// what the sheet actually says. dayjs.tz(input, APP_TIMEZONE) pins the
+// interpretation to Thai local time regardless of the host's own TZ.
+const APP_TIMEZONE = "Asia/Bangkok";
 
 const THAI_MONTHS = {
   "ม.ค.": "01", "มกราคม": "01",
@@ -598,7 +610,12 @@ async function importTasksFromExcel(file, creator_id) {
 
         let baseDate;
         if (dateStr instanceof Date) {
-          baseDate = dayjs(dateStr).format("YYYY-MM-DD");
+          // xlsx's cellDates option encodes date-only cells as a Date whose
+          // Y/M/D live in the UTC fields (e.g. a plain "30/9/2024" cell
+          // becomes 2024-09-30T00:00:00Z) — reading it with plain dayjs()
+          // would reinterpret that instant in the server's local timezone
+          // and can shift the calendar day depending on the host's TZ.
+          baseDate = dayjs.utc(dateStr).format("YYYY-MM-DD");
         } else {
           const str = String(dateStr).trim();
           
@@ -632,31 +649,37 @@ async function importTasksFromExcel(file, creator_id) {
         
         if (startTimeStr) {
            if (startTimeStr instanceof Date) {
-              startHHmm = dayjs(startTimeStr).format("HH:mm");
+              // Same UTC-encoded quirk as the date cell above — a "08:30"
+              // time cell becomes 1899-12-30T08:30:00Z, so the hour/minute
+              // must be read via the UTC fields, not the host's local zone.
+              startHHmm = dayjs.utc(startTimeStr).format("HH:mm");
            } else if (typeof startTimeStr === 'string') {
               startHHmm = startTimeStr.trim();
            }
         }
-        
+
         if (endTimeStr) {
            if (endTimeStr instanceof Date) {
-              endHHmm = dayjs(endTimeStr).format("HH:mm");
+              endHHmm = dayjs.utc(endTimeStr).format("HH:mm");
            } else if (typeof endTimeStr === 'string') {
               endHHmm = endTimeStr.trim();
            }
         }
 
-        // Attempt to parse local time and convert to UTC ISO string
+        // baseDate + HH:mm is a naive Thai wall-clock value with no
+        // timezone info — dayjs.tz(..., APP_TIMEZONE) pins it to Thai local
+        // time before converting to UTC, instead of silently using
+        // whichever timezone the server process happens to run in.
         let start_time;
         let end_time;
-        
+
         try {
-          start_time = dayjs(`${baseDate}T${startHHmm}:00`).toISOString();
-          end_time = dayjs(`${baseDate}T${endHHmm}:00`).toISOString();
+          start_time = dayjs.tz(`${baseDate}T${startHHmm}:00`, APP_TIMEZONE).toISOString();
+          end_time = dayjs.tz(`${baseDate}T${endHHmm}:00`, APP_TIMEZONE).toISOString();
           if (!start_time) throw new Error("Invalid start");
         } catch (e) {
-          start_time = dayjs(baseDate).toISOString();
-          end_time = dayjs(baseDate).toISOString();
+          start_time = dayjs.tz(baseDate, APP_TIMEZONE).toISOString();
+          end_time = dayjs.tz(baseDate, APP_TIMEZONE).toISOString();
         }
 
         // Map Type
