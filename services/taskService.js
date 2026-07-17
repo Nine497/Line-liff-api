@@ -563,10 +563,94 @@ async function getMyTasks(lineId) {
 
 /**
  * =========================
+ * IMPORT UPSERT HELPERS (duty-shift re-imports)
+ * A duty roster gets re-uploaded whenever someone's shift changes, so the
+ * same (title, start_time, end_time) slot from a previous "การเข้าเวร"
+ * import should be updated in place instead of creating a duplicate task.
+ * =========================
+ */
+async function findMatchingImportedTask(title, start_time, end_time) {
+  try {
+    const { data, error } = await supabase
+      .from("tasks")
+      .select("id")
+      .eq("title", title)
+      .eq("start_time", start_time)
+      .eq("end_time", end_time)
+      .eq("source", "import")
+      .maybeSingle();
+
+    if (error) {
+      console.error("[findMatchingImportedTask] Supabase error:", error);
+      throw error;
+    }
+
+    return data?.id || null;
+  } catch (err) {
+    console.error("[findMatchingImportedTask] Unexpected error:", err);
+    throw err;
+  }
+}
+
+async function updateTaskFields(id, { description, type_id, location, updated_at }) {
+  try {
+    const payload = {
+      description: description?.trim() || null,
+      type_id: type_id ?? null,
+      location: location?.trim() || null,
+      updated_at,
+    };
+
+    const { data, error } = await supabase
+      .from("tasks")
+      .update(payload)
+      .eq("id", id)
+      .select()
+      .single();
+
+    if (error) {
+      console.error("[updateTaskFields] Supabase error:", error);
+      throw error;
+    }
+
+    return data;
+  } catch (err) {
+    console.error("[updateTaskFields] Unexpected error:", err);
+    throw err;
+  }
+}
+
+// Wipes the task's current participants and attaches the new set — unlike
+// attachParticipants (which only appends/dedupes), this makes the task end
+// up with *exactly* whoever the latest sheet lists, dropping anyone who was
+// removed from the roster.
+async function replaceParticipants(task_id, participant_ids, now) {
+  try {
+    const { error } = await supabase
+      .from("task_participants")
+      .delete()
+      .eq("task_id", task_id);
+
+    if (error) {
+      console.error("[replaceParticipants] Supabase delete error:", error);
+      throw error;
+    }
+
+    if (participant_ids?.length) {
+      await attachParticipants(task_id, participant_ids, now);
+    }
+  } catch (err) {
+    console.error("[replaceParticipants] Unexpected error:", err);
+    throw err;
+  }
+}
+
+/**
+ * =========================
  * IMPORT TASKS FROM EXCEL
  * =========================
  */
-async function importTasksFromExcel(file, creator_id) {
+async function importTasksFromExcel(file, creator_id, isDuty = false) {
   try {
     if (!file) throw { code: "VALIDATION", message: "Missing file" };
 
@@ -577,7 +661,7 @@ async function importTasksFromExcel(file, creator_id) {
     // read as JS objects
     const rows = xlsx.utils.sheet_to_json(worksheet, { raw: true });
 
-    if (!rows.length) return { count: 0 };
+    if (!rows.length) return { count: 0, updated: 0 };
 
     // Fetch types and participants for mapping
     const types = await getTaskTypes();
@@ -588,8 +672,17 @@ async function importTasksFromExcel(file, creator_id) {
 
     const now = new Date().toISOString();
     let successCount = 0;
+    let updatedCount = 0;
     let failCount = 0;
     const errors = [];
+
+    // Rows in the *same* sheet sharing one (title, start_time, end_time)
+    // slot (e.g. several people on the same shift, one row each) must be
+    // merged into the same task rather than each independently overwriting
+    // the last — the first row in a run either creates or replace-wipes the
+    // task's participants, every later row in that same run for the same
+    // key just appends to it.
+    const touchedTaskKeys = new Map();
 
     for (const row of rows) {
       try {
@@ -710,24 +803,73 @@ async function importTasksFromExcel(file, creator_id) {
           finalCreatorId = data?.id || null;
         }
 
-        const task = await insertTask({
-          title: String(title),
-          description: String(description),
-          creator_id: finalCreatorId,
-          start_time,
-          end_time,
-          type_id,
-          location: String(location),
-          source: "import",
-          created_at: now,
-          updated_at: now,
-        });
+        const finalTitle = String(title);
 
-        if (participant_ids.length > 0) {
-          await attachParticipants(task.id, participant_ids, now);
+        if (isDuty) {
+          const key = `${finalTitle}|${start_time}|${end_time}`;
+          const touchedId = touchedTaskKeys.get(key);
+
+          if (touchedId) {
+            // Same slot already handled earlier in this run — just add
+            // this row's participant(s) to it.
+            if (participant_ids.length > 0) {
+              await attachParticipants(touchedId, participant_ids, now);
+            }
+          } else {
+            const existingId = await findMatchingImportedTask(finalTitle, start_time, end_time);
+
+            if (existingId) {
+              await updateTaskFields(existingId, {
+                description: String(description),
+                type_id,
+                location: String(location),
+                updated_at: now,
+              });
+              await replaceParticipants(existingId, participant_ids, now);
+              touchedTaskKeys.set(key, existingId);
+              updatedCount++;
+            } else {
+              const task = await insertTask({
+                title: finalTitle,
+                description: String(description),
+                creator_id: finalCreatorId,
+                start_time,
+                end_time,
+                type_id,
+                location: String(location),
+                source: "import",
+                created_at: now,
+                updated_at: now,
+              });
+
+              if (participant_ids.length > 0) {
+                await attachParticipants(task.id, participant_ids, now);
+              }
+
+              touchedTaskKeys.set(key, task.id);
+              successCount++;
+            }
+          }
+        } else {
+          const task = await insertTask({
+            title: finalTitle,
+            description: String(description),
+            creator_id: finalCreatorId,
+            start_time,
+            end_time,
+            type_id,
+            location: String(location),
+            source: "import",
+            created_at: now,
+            updated_at: now,
+          });
+
+          if (participant_ids.length > 0) {
+            await attachParticipants(task.id, participant_ids, now);
+          }
+
+          successCount++;
         }
-
-        successCount++;
       } catch (rowErr) {
         console.error("[importTasksFromExcel] Row failed:", rowErr);
         failCount++;
@@ -740,7 +882,7 @@ async function importTasksFromExcel(file, creator_id) {
        console.warn("[importTasksFromExcel] Skipped rows details:", errors);
     }
 
-    return { count: successCount, failed: failCount, errors };
+    return { count: successCount, updated: updatedCount, failed: failCount, errors };
 
   } catch (err) {
     console.error("[importTasksFromExcel] FAILED:", err);

@@ -140,9 +140,12 @@ router.post("/participants/available", validate(checkAvailableSchema), async (re
 // =========================
 router.post("/import", upload.single("file"), async (req, res) => {
   try {
+    const isDuty = req.body.is_duty === "true" || req.body.is_duty === true;
+
     const result = await taskService.importTasksFromExcel(
       req.file,
-      req.body.user_id
+      req.body.user_id,
+      isDuty
     );
 
     return success(res, result);
