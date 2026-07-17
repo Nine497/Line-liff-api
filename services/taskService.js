@@ -4,6 +4,40 @@ const dayjs = require("dayjs");
 const customParseFormat = require("dayjs/plugin/customParseFormat");
 dayjs.extend(customParseFormat);
 
+const THAI_MONTHS = {
+  "ม.ค.": "01", "มกราคม": "01",
+  "ก.พ.": "02", "กุมภาพันธ์": "02",
+  "มี.ค.": "03", "มีนาคม": "03",
+  "เม.ย.": "04", "เมษายน": "04",
+  "พ.ค.": "05", "พฤษภาคม": "05",
+  "มิ.ย.": "06", "มิถุนายน": "06",
+  "ก.ค.": "07", "กรกฎาคม": "07",
+  "ส.ค.": "08", "สิงหาคม": "08",
+  "ก.ย.": "09", "กันยายน": "09",
+  "ต.ค.": "10", "ตุลาคม": "10",
+  "พ.ย.": "11", "พฤศจิกายน": "11",
+  "ธ.ค.": "12", "ธันวาคม": "12"
+};
+
+function parseThaiDateStr(str) {
+  let s = str.trim();
+  for (const [th, mm] of Object.entries(THAI_MONTHS)) {
+    if (s.includes(th)) {
+       s = s.replace(th, `/${mm}/`);
+       break;
+    }
+  }
+  s = s.replace(/\s+/g, "").replace(/\/+/g, "/");
+  const parts = s.split("/");
+  if (parts.length === 3) {
+    let [d, m, y] = parts;
+    if (y.length === 2) y = "25" + y;
+    if (parseInt(y) > 2400) y = String(parseInt(y) - 543);
+    return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+  }
+  return null;
+}
+
 /**
  * =========================
  * CONFLICT CHECK
@@ -543,6 +577,7 @@ async function importTasksFromExcel(file, creator_id) {
     const now = new Date().toISOString();
     let successCount = 0;
     let failCount = 0;
+    const errors = [];
 
     for (const row of rows) {
       try {
@@ -557,6 +592,7 @@ async function importTasksFromExcel(file, creator_id) {
 
         if (!title || !dateStr) {
           failCount++;
+          errors.push({ row: title || "Unknown", reason: "ไม่มีชื่องาน หรือ วันที่" });
           continue;
         }
 
@@ -564,18 +600,30 @@ async function importTasksFromExcel(file, creator_id) {
         if (dateStr instanceof Date) {
           baseDate = dayjs(dateStr).format("YYYY-MM-DD");
         } else {
-          // Attempt to parse standard or DD/MM/YYYY
           const str = String(dateStr).trim();
-          let parsed = dayjs(str);
-          if (!parsed.isValid()) {
-             parsed = dayjs(str, ["DD/MM/YYYY", "D/M/YYYY", "DD-MM-YYYY", "D-M-YYYY"], true);
-          }
-          if (parsed.isValid()) {
-             baseDate = parsed.format("YYYY-MM-DD");
+          
+          // 1. Try parsing as Thai date first (e.g. "1 มิ.ย. 69")
+          const thaiParsed = parseThaiDateStr(str);
+          if (thaiParsed && dayjs(thaiParsed).isValid()) {
+             baseDate = thaiParsed;
           } else {
-             // Invalid date, skip
-             failCount++;
-             continue;
+             // 2. Try standard or DD/MM/YYYY
+             let parsed = dayjs(str);
+             if (!parsed.isValid()) {
+                parsed = dayjs(str, ["DD/MM/YYYY", "D/M/YYYY", "DD-MM-YYYY", "D-M-YYYY"], true);
+             }
+             if (parsed.isValid()) {
+                // Check if Buddhist Year (e.g. 2569)
+                let year = parsed.year();
+                if (year > 2400) {
+                   parsed = parsed.year(year - 543);
+                }
+                baseDate = parsed.format("YYYY-MM-DD");
+             } else {
+                failCount++;
+                errors.push({ row: title, reason: `รูปแบบวันที่ไม่ถูกต้อง: ${str}` });
+                continue;
+             }
           }
         }
 
@@ -660,10 +708,16 @@ async function importTasksFromExcel(file, creator_id) {
       } catch (rowErr) {
         console.error("[importTasksFromExcel] Row failed:", rowErr);
         failCount++;
+        errors.push({ row: row["ชื่องาน"] || "Unknown", reason: rowErr.message || String(rowErr) });
       }
     }
 
-    return { count: successCount, failed: failCount };
+    // Log errors for debugging if any
+    if (errors.length > 0) {
+       console.warn("[importTasksFromExcel] Skipped rows details:", errors);
+    }
+
+    return { count: successCount, failed: failCount, errors };
 
   } catch (err) {
     console.error("[importTasksFromExcel] FAILED:", err);
