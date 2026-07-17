@@ -1,4 +1,6 @@
 const supabase = require("../supabase");
+const xlsx = require("xlsx");
+const dayjs = require("dayjs");
 
 /**
  * =========================
@@ -511,6 +513,142 @@ async function getMyTasks(lineId) {
   }
 }
 
+/**
+ * =========================
+ * IMPORT TASKS FROM EXCEL
+ * =========================
+ */
+async function importTasksFromExcel(file, creator_id) {
+  try {
+    if (!file) throw { code: "VALIDATION", message: "Missing file" };
+
+    const workbook = xlsx.read(file.buffer, { type: "buffer", cellDates: true });
+    const firstSheet = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[firstSheet];
+    
+    // read as JS objects
+    const rows = xlsx.utils.sheet_to_json(worksheet, { raw: true });
+
+    if (!rows.length) return { count: 0 };
+
+    // Fetch types and participants for mapping
+    const types = await getTaskTypes();
+    const typeMap = new Map(types.map(t => [t.name.trim().toLowerCase(), t.id]));
+    
+    const participants = await getParticipants();
+    const participantMap = new Map(participants.map(p => [p.name.trim().toLowerCase(), p.id]));
+
+    const now = new Date().toISOString();
+    let successCount = 0;
+
+    for (const row of rows) {
+      const title = row["ชื่องาน"];
+      const dateStr = row["วันที่"];
+      const startTimeStr = row["เวลาเริ่ม"];
+      const endTimeStr = row["เวลาสิ้นสุด"];
+      const typeStr = row["ประเภท"];
+      const location = row["สถานที่"] || "";
+      const description = row["รายละเอียด"] || "";
+      const participantsStr = row["ผู้เข้าร่วม"] || "";
+
+      if (!title || !dateStr) continue;
+
+      let baseDate;
+      if (dateStr instanceof Date) {
+        baseDate = dayjs(dateStr).format("YYYY-MM-DD");
+      } else {
+        // Handle various string formats if needed, or assume standard
+        baseDate = dayjs(dateStr).format("YYYY-MM-DD");
+      }
+
+      let startHHmm = "08:30";
+      let endHHmm = "16:30";
+      
+      if (startTimeStr) {
+         if (startTimeStr instanceof Date) {
+            startHHmm = dayjs(startTimeStr).format("HH:mm");
+         } else if (typeof startTimeStr === 'string') {
+            startHHmm = startTimeStr.trim();
+         }
+      }
+      
+      if (endTimeStr) {
+         if (endTimeStr instanceof Date) {
+            endHHmm = dayjs(endTimeStr).format("HH:mm");
+         } else if (typeof endTimeStr === 'string') {
+            endHHmm = endTimeStr.trim();
+         }
+      }
+
+      // Attempt to parse local time and convert to UTC ISO string
+      let start_time;
+      let end_time;
+      
+      try {
+        start_time = dayjs(`${baseDate}T${startHHmm}:00`).toISOString();
+        end_time = dayjs(`${baseDate}T${endHHmm}:00`).toISOString();
+      } catch (e) {
+        // Fallback if format is weird
+        start_time = dayjs(baseDate).toISOString();
+        end_time = dayjs(baseDate).toISOString();
+      }
+
+      // Map Type
+      let type_id = null;
+      if (typeStr) {
+        type_id = typeMap.get(typeStr.trim().toLowerCase()) || null;
+      }
+
+      // Map Participants
+      const participant_ids = [];
+      if (participantsStr) {
+        const names = String(participantsStr).split(",").map(n => n.trim().toLowerCase()).filter(Boolean);
+        for (const name of names) {
+          if (participantMap.has(name)) {
+            participant_ids.push(participantMap.get(name));
+          }
+        }
+      }
+
+      // Resolve creator
+      let finalCreatorId = null;
+      if (creator_id) {
+        const { data } = await supabase
+          .from("users")
+          .select("id")
+          .or(`id.eq.${creator_id},line_id.eq.${creator_id}`)
+          .maybeSingle();
+        finalCreatorId = data?.id || null;
+      }
+
+      const task = await insertTask({
+        title,
+        description,
+        creator_id: finalCreatorId,
+        start_time,
+        end_time,
+        type_id,
+        location,
+        source: "import",
+        created_at: now,
+        updated_at: now,
+      });
+
+      if (participant_ids.length > 0) {
+        await attachParticipants(task.id, participant_ids, now);
+      }
+
+      successCount++;
+    }
+
+    return { count: successCount };
+
+  } catch (err) {
+    console.error("[importTasksFromExcel] FAILED:", err);
+    throw err;
+  }
+}
+
 module.exports = {
   createTask,
   checkConflict,
@@ -523,4 +661,5 @@ module.exports = {
   getTasks,
   getParticipantByLineId,
   getMyTasks,
+  importTasksFromExcel,
 };
