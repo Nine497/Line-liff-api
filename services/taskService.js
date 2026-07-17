@@ -1,6 +1,8 @@
 const supabase = require("../supabase");
 const xlsx = require("xlsx");
 const dayjs = require("dayjs");
+const customParseFormat = require("dayjs/plugin/customParseFormat");
+dayjs.extend(customParseFormat);
 
 /**
  * =========================
@@ -540,108 +542,128 @@ async function importTasksFromExcel(file, creator_id) {
 
     const now = new Date().toISOString();
     let successCount = 0;
+    let failCount = 0;
 
     for (const row of rows) {
-      const title = row["ชื่องาน"];
-      const dateStr = row["วันที่"];
-      const startTimeStr = row["เวลาเริ่ม"];
-      const endTimeStr = row["เวลาสิ้นสุด"];
-      const typeStr = row["ประเภท"];
-      const location = row["สถานที่"] || "";
-      const description = row["รายละเอียด"] || "";
-      const participantsStr = row["ผู้เข้าร่วม"] || "";
-
-      if (!title || !dateStr) continue;
-
-      let baseDate;
-      if (dateStr instanceof Date) {
-        baseDate = dayjs(dateStr).format("YYYY-MM-DD");
-      } else {
-        // Handle various string formats if needed, or assume standard
-        baseDate = dayjs(dateStr).format("YYYY-MM-DD");
-      }
-
-      let startHHmm = "08:30";
-      let endHHmm = "16:30";
-      
-      if (startTimeStr) {
-         if (startTimeStr instanceof Date) {
-            startHHmm = dayjs(startTimeStr).format("HH:mm");
-         } else if (typeof startTimeStr === 'string') {
-            startHHmm = startTimeStr.trim();
-         }
-      }
-      
-      if (endTimeStr) {
-         if (endTimeStr instanceof Date) {
-            endHHmm = dayjs(endTimeStr).format("HH:mm");
-         } else if (typeof endTimeStr === 'string') {
-            endHHmm = endTimeStr.trim();
-         }
-      }
-
-      // Attempt to parse local time and convert to UTC ISO string
-      let start_time;
-      let end_time;
-      
       try {
-        start_time = dayjs(`${baseDate}T${startHHmm}:00`).toISOString();
-        end_time = dayjs(`${baseDate}T${endHHmm}:00`).toISOString();
-      } catch (e) {
-        // Fallback if format is weird
-        start_time = dayjs(baseDate).toISOString();
-        end_time = dayjs(baseDate).toISOString();
-      }
+        const title = row["ชื่องาน"];
+        const dateStr = row["วันที่"];
+        const startTimeStr = row["เวลาเริ่ม"];
+        const endTimeStr = row["เวลาสิ้นสุด"];
+        const typeStr = row["ประเภท"];
+        const location = row["สถานที่"] || "";
+        const description = row["รายละเอียด"] || "";
+        const participantsStr = row["ผู้เข้าร่วม"] || "";
 
-      // Map Type
-      let type_id = null;
-      if (typeStr) {
-        type_id = typeMap.get(typeStr.trim().toLowerCase()) || null;
-      }
+        if (!title || !dateStr) {
+          failCount++;
+          continue;
+        }
 
-      // Map Participants
-      const participant_ids = [];
-      if (participantsStr) {
-        const names = String(participantsStr).split(",").map(n => n.trim().toLowerCase()).filter(Boolean);
-        for (const name of names) {
-          if (participantMap.has(name)) {
-            participant_ids.push(participantMap.get(name));
+        let baseDate;
+        if (dateStr instanceof Date) {
+          baseDate = dayjs(dateStr).format("YYYY-MM-DD");
+        } else {
+          // Attempt to parse standard or DD/MM/YYYY
+          const str = String(dateStr).trim();
+          let parsed = dayjs(str);
+          if (!parsed.isValid()) {
+             parsed = dayjs(str, ["DD/MM/YYYY", "D/M/YYYY", "DD-MM-YYYY", "D-M-YYYY"], true);
+          }
+          if (parsed.isValid()) {
+             baseDate = parsed.format("YYYY-MM-DD");
+          } else {
+             // Invalid date, skip
+             failCount++;
+             continue;
           }
         }
+
+        let startHHmm = "08:30";
+        let endHHmm = "16:30";
+        
+        if (startTimeStr) {
+           if (startTimeStr instanceof Date) {
+              startHHmm = dayjs(startTimeStr).format("HH:mm");
+           } else if (typeof startTimeStr === 'string') {
+              startHHmm = startTimeStr.trim();
+           }
+        }
+        
+        if (endTimeStr) {
+           if (endTimeStr instanceof Date) {
+              endHHmm = dayjs(endTimeStr).format("HH:mm");
+           } else if (typeof endTimeStr === 'string') {
+              endHHmm = endTimeStr.trim();
+           }
+        }
+
+        // Attempt to parse local time and convert to UTC ISO string
+        let start_time;
+        let end_time;
+        
+        try {
+          start_time = dayjs(`${baseDate}T${startHHmm}:00`).toISOString();
+          end_time = dayjs(`${baseDate}T${endHHmm}:00`).toISOString();
+          if (!start_time) throw new Error("Invalid start");
+        } catch (e) {
+          start_time = dayjs(baseDate).toISOString();
+          end_time = dayjs(baseDate).toISOString();
+        }
+
+        // Map Type
+        let type_id = null;
+        if (typeStr) {
+          type_id = typeMap.get(String(typeStr).trim().toLowerCase()) || null;
+        }
+
+        // Map Participants (Support comma, semicolon, newline)
+        const participant_ids = [];
+        if (participantsStr) {
+          const names = String(participantsStr).split(/[\n,;]+/).map(n => n.trim().toLowerCase()).filter(Boolean);
+          for (const name of names) {
+            if (participantMap.has(name)) {
+              participant_ids.push(participantMap.get(name));
+            }
+          }
+        }
+
+        // Resolve creator
+        let finalCreatorId = null;
+        if (creator_id) {
+          const { data } = await supabase
+            .from("users")
+            .select("id")
+            .or(`id.eq.${creator_id},line_id.eq.${creator_id}`)
+            .maybeSingle();
+          finalCreatorId = data?.id || null;
+        }
+
+        const task = await insertTask({
+          title: String(title),
+          description: String(description),
+          creator_id: finalCreatorId,
+          start_time,
+          end_time,
+          type_id,
+          location: String(location),
+          source: "import",
+          created_at: now,
+          updated_at: now,
+        });
+
+        if (participant_ids.length > 0) {
+          await attachParticipants(task.id, participant_ids, now);
+        }
+
+        successCount++;
+      } catch (rowErr) {
+        console.error("[importTasksFromExcel] Row failed:", rowErr);
+        failCount++;
       }
-
-      // Resolve creator
-      let finalCreatorId = null;
-      if (creator_id) {
-        const { data } = await supabase
-          .from("users")
-          .select("id")
-          .or(`id.eq.${creator_id},line_id.eq.${creator_id}`)
-          .maybeSingle();
-        finalCreatorId = data?.id || null;
-      }
-
-      const task = await insertTask({
-        title,
-        description,
-        creator_id: finalCreatorId,
-        start_time,
-        end_time,
-        type_id,
-        location,
-        source: "import",
-        created_at: now,
-        updated_at: now,
-      });
-
-      if (participant_ids.length > 0) {
-        await attachParticipants(task.id, participant_ids, now);
-      }
-
-      successCount++;
     }
 
-    return { count: successCount };
+    return { count: successCount, failed: failCount };
 
   } catch (err) {
     console.error("[importTasksFromExcel] FAILED:", err);
